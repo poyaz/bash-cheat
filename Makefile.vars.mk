@@ -1,0 +1,1 @@
+TELEPORT_DEPENDENCY_ARCH ?= zenity keepassxc
