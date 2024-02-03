@@ -13,7 +13,7 @@ _is_sourced() {
 function _usage() {
   echo -e "tsh-login proxy\n"
   echo -e "Usage:"
-  echo -e "  bash $0 [OPTIONS...]\n"
+  echo -e "  bash $0 [OPTIONS...] -- commands\n"
   echo -e "Options:"
   echo -e "  -d, --database\t\t\tThe database link"
   echo -e "  -e, --entry\t\t\tThe entry name"
@@ -26,6 +26,7 @@ function _usage() {
 
 cmdline() {
     local arg
+    local exec_arg
 
     for arg
     do
@@ -33,43 +34,43 @@ cmdline() {
         case "$arg" in
             --database) args="${args}-d ";;
             --entry) args="${args}-e ";;
-            --teleport-proxy) args="${args}-P ";;
-            --teleport-auth) args="${args}-A ";;
-            --teleport-user) args="${args}-U ";;
-            --teleport-cluster) args="${args}-C ";;
             --help) args="${args}-h ";;
-            *) [[ "${arg:0:1}" == "-" ]] || delim="\""
-                args="${args}${delim}${arg}${delim} ";;
+            --) exec_arg="$arg ";;
+            *)
+              [[ "${arg:0:1}" == "-" ]] || delim="\""
+              if [[ -z "$exec_arg" ]]; then
+                args="${args}${delim}${arg}${delim} "
+              else
+                exec_arg="${exec_arg}${delim}${arg}${delim} "
+              fi
+              ;;
         esac
     done
 
     eval set -- "$args"
-
-    while getopts "d:e:P:A:U:C:h" OPTION
+    while getopts "d:e:h" OPTION
     do
       case "$OPTION" in
+      h)
+        _usage
+        ;;
       d)
         OPTS[database]="$OPTARG"
         ;;
       e)
         OPTS[entry]="$OPTARG"
         ;;
-      P)
-        OPTS[teleport_proxy]="$OPTARG"
-        ;;
-      A)
-        OPTS[teleport_auth]="$OPTARG"
-        ;;
-      U)
-        OPTS[teleport_user]="$OPTARG"
-        ;;
-      C)
-        OPTS[teleport_cluster]="$OPTARG"
-        ;;
       *)
         exit 1
       esac
     done
+
+    if [[ -z "$exec_arg" ]]; then
+      echo "[ERR] Please add your command after \"--\""
+      exit 1
+    fi
+
+    OPTS[exec]="${exec_arg:3:-1}"
 
     return 0
 }
@@ -84,53 +85,53 @@ keepass_get_password() {
 
 tsh_login() {
   local PASS
-    PASS="$(keepass_get_password)"
-    readonly PASS
+  PASS="$(keepass_get_password)"
+  readonly PASS
 
-    local KEE_DATA KEE_RC
-    KEE_DATA=$(echo "$PASS" | keepassxc-cli show -a Password -s -t "${OPTS[database]}" "${OPTS[entry]}" 2>&1)
-    KEE_RC=$?
-    readonly KEE_DATA
-    readonly KEE_RC
+  local KEE_DATA KEE_RC
+  KEE_DATA=$(echo "$PASS" | keepassxc-cli show -a Password -s -t "${OPTS[database]}" "${OPTS[entry]}" 2>&1)
+  KEE_RC=$?
+  readonly KEE_DATA
+  readonly KEE_RC
 
-    if [[ "$KEE_RC" -ne 0 ]]; then
-      echo "$KEE_DATA" | tail -n +2
-      exit 1
-    fi
+  if [[ "$KEE_RC" -ne 0 ]]; then
+    echo "$KEE_DATA" | tail -n +2
+    exit 1
+  fi
 
-    local KEE_PASS KEE_TOTP
-    local i=0
-    while IFS= read -r line; do
-      [[ "$i" -eq 1 ]] && KEE_PASS="$line"
-      [[ "$i" -eq 2 ]] && KEE_TOTP="$line"
+  local KEE_PASS KEE_TOTP
+  local i=0
+  while IFS= read -r line; do
+    [[ "$i" -eq 1 ]] && KEE_PASS="$line"
+    [[ "$i" -eq 2 ]] && KEE_TOTP="$line"
 
-      (( i++ ))
-    done <<< "$KEE_DATA"
+    (( i++ ))
+  done <<< "$KEE_DATA"
 
-    /usr/bin/expect << EOF
-      set timeout -1
-      log_user 1
+  /usr/bin/expect << EOF
+    set timeout -1
+    log_user 1
 
-      spawn tsh login --proxy=${OPTS[teleport_proxy]} --auth=${OPTS[teleport_auth]} --user=${OPTS[teleport_user]} ${OPTS[teleport_cluster]}
+    spawn ${OPTS[exec]}
 
-      expect {
-        "Enter password for Teleport user" {
-          send -- "$KEE_PASS\n"
-          exp_continue
-        }
-
-        "Enter your OTP token" {
-          send -- "$KEE_TOTP\n"
-          exp_continue
-        }
-
-        "ERROR:" {
-           expect eof
-           exit 1
-        }
-
-        eof { wait }
+    expect {
+      "Enter password for Teleport user" {
+        send -- "$KEE_PASS\n"
+        exp_continue
       }
+
+      "Enter your OTP token" {
+        send -- "$KEE_TOTP\n"
+        exp_continue
+      }
+
+      "ERROR:" {
+         expect eof
+         exit 1
+      }
+
+      eof { wait }
+    }
 EOF
 }
 
