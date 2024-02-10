@@ -1,3 +1,6 @@
+### Custom template
+tmp/*
+
 ### JetBrains template
 .idea/*
 
