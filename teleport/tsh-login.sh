@@ -17,6 +17,7 @@ function _usage() {
   echo -e "Options:"
   echo -e "  -d, --database\t\t\tThe database link"
   echo -e "  -e, --entry\t\t\tThe entry name"
+  echo -e "  -a, --auto\t\t\tAuto complete command if string contain '\' (Like: tsh --user=\\\UserName --proxy=\\\tsh-proxy ...)"
   echo -e "  -v, --version\t\t\tShow version information and exit"
   echo -e "  -h, --help\t\t\tShow help"
   echo ""
@@ -34,6 +35,7 @@ cmdline() {
         case "$arg" in
             --database) args="${args}-d ";;
             --entry) args="${args}-e ";;
+            --auto) args="${args}-a ";;
             --help) args="${args}-h ";;
             --) exec_arg="$arg ";;
             *)
@@ -48,7 +50,7 @@ cmdline() {
     done
 
     eval set -- "$args"
-    while getopts "d:e:h" OPTION
+    while getopts "d:e:ah" OPTION
     do
       case "$OPTION" in
       h)
@@ -59,6 +61,9 @@ cmdline() {
         ;;
       e)
         OPTS[entry]="$OPTARG"
+        ;;
+      a)
+        OPTS[auto]=1
         ;;
       *)
         exit 1
@@ -89,7 +94,7 @@ tsh_login() {
   readonly PASS
 
   local KEE_DATA KEE_RC
-  KEE_DATA=$(echo "$PASS" | keepassxc-cli show -a Password -s -t "${OPTS[database]}" "${OPTS[entry]}" 2>&1)
+  KEE_DATA=$(echo "$PASS" | keepassxc-cli show -s --all -t "${OPTS[database]}" "${OPTS[entry]}" 2>&1)
   KEE_RC=$?
   readonly KEE_DATA
   readonly KEE_RC
@@ -99,20 +104,75 @@ tsh_login() {
     exit 1
   fi
 
-  local KEE_PASS KEE_TOTP
+  PARSE_RESULT=$(awk -v kee_data="$KEE_DATA" -v arg_data="${OPTS[exec]//'\'/"\\\\"}" '
+  function rec_wrap(str) {
+    matches = ""
+    return rec_func(str)
+  }
+  function rec_func(str2) {
+    where = match(str2, /\\[a-zA-Z][a-zA-Z0-9_-]+/)
+    if(where != 0) {
+        matches=(matches substr(str2, RSTART, RLENGTH) " ")
+        rec_func(substr(str2, RSTART+RLENGTH, length(str2)))
+    }
+    return matches
+  }
+  { totp = "" }
+  BEGIN {
+    split(kee_data, kee_arr, "\n")
+    for (i = 2; i <= length(kee_arr); i++) {
+      if (i == length(kee_arr)) {
+        totp = kee_arr[i]
+        break
+      }
+
+      split(kee_arr[i], tmp, ": ")
+      data[tmp[1]] = tmp[2]
+    }
+
+    cmd = arg_data
+    split(rec_wrap(arg_data), arg_arr, " ")
+    for (i = 1; i <= length(arg_arr); i++) {
+      key = substr(arg_arr[i], 2)
+      value = data[key]
+      if (value == "") {
+        continue
+      }
+
+      gsub("\\" arg_arr[i] , value, cmd)
+    }
+
+    print data["Password"]
+    print totp
+    print cmd
+    exit
+  }
+  ')
+  readonly PARSE_RESULT
+
+  local KEE_PASS KEE_TOTP KEE_CMD
   local i=0
   while IFS= read -r line; do
-    [[ "$i" -eq 1 ]] && KEE_PASS="$line"
-    [[ "$i" -eq 2 ]] && KEE_TOTP="$line"
+    [[ "$i" -eq 0 ]] && KEE_PASS="$line"
+    [[ "$i" -eq 1 ]] && KEE_TOTP="$line"
+    [[ "$i" -eq 2 ]] && KEE_CMD="$line"
 
     (( i++ ))
-  done <<< "$KEE_DATA"
+  done <<< "$PARSE_RESULT"
+
+  local EXEC
+  if [[ "${OPTS[auto]}" -eq 1 ]]; then
+    EXEC="${KEE_CMD}"
+  else
+    EXEC="${OPTS[exec]}"
+  fi
+  readonly EXEC
 
   /usr/bin/expect << EOF
     set timeout -1
     log_user 1
 
-    spawn ${OPTS[exec]}
+    spawn $EXEC
 
     expect {
       "Enter password for Teleport user" {
