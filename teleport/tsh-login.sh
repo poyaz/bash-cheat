@@ -104,7 +104,7 @@ tsh_login() {
     exit 1
   fi
 
-  PARSE_RESULT=$(awk -v kee_data="$KEE_DATA" -v arg_data="${OPTS[exec]//'\'/"\\\\"}" '
+  parse_result=$(awk -v kee_data="$KEE_DATA" -v arg_data="${OPTS[exec]//'\'/"\\\\"}" '
   function rec_wrap(str) {
     matches = ""
     return rec_func(str)
@@ -148,40 +148,49 @@ tsh_login() {
     exit
   }
   ')
-  readonly PARSE_RESULT
 
-  local KEE_PASS KEE_TOTP KEE_CMD
+  local kee_pass kee_totp kee_cmd
   local i=0
   while IFS= read -r line; do
-    [[ "$i" -eq 0 ]] && KEE_PASS="$line"
-    [[ "$i" -eq 1 ]] && KEE_TOTP="$line"
-    [[ "$i" -eq 2 ]] && KEE_CMD="$line"
+    [[ "$i" -eq 0 ]] && kee_pass="$line"
+    [[ "$i" -eq 1 ]] && kee_totp="$line"
+    [[ "$i" -eq 2 ]] && kee_cmd="$line"
 
     (( i++ ))
-  done <<< "$PARSE_RESULT"
+  done <<< "$parse_result"
 
   local EXEC
   if [[ "${OPTS[auto]}" -eq 1 ]]; then
-    EXEC="${KEE_CMD}"
+    EXEC="${kee_cmd}"
   else
     EXEC="${OPTS[exec]}"
   fi
   readonly EXEC
 
+  (
+    unset kee_pass kee_totp parse_result
+    exit 0
+  ) &
+
   /usr/bin/expect << EOF
     set timeout -1
     log_user 1
+    set is_login 0
 
     spawn $EXEC
 
     expect {
       "Enter password for Teleport user" {
-        send -- "$KEE_PASS\n"
+        if {\$is_login == 1} {
+          send_user -- "\n\[ERR\] Teleport token is expired.\n"
+          exit 1
+        }
+        send -- "$kee_pass\n"
         exp_continue
       }
 
       "Enter your OTP token" {
-        send -- "$KEE_TOTP\n"
+        send -- "$kee_totp\n"
         exp_continue
       }
 
@@ -190,9 +199,17 @@ tsh_login() {
          exit 1
       }
 
-      eof { wait }
+      -re "^\[^E\]\[^n\]\[^t\]\[^e\]\[^r\].+$" {
+        set is_login 1
+        exp_continue
+      }
     }
 EOF
+
+  local EXPECT_RC=$?
+  readonly EXPECT_RC
+  echo "[$([ $EXPECT_RC -eq 0 ] && echo "INFO" || echo "WARN")] Script exit with $EXPECT_RC"
+  exit $EXPECT_RC
 }
 
 _main() {
